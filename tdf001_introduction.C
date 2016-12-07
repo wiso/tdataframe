@@ -18,6 +18,7 @@
 #include "TH1F.h"
 #include "TTree.h"
 #include "ROOT/TSeq.hxx"
+#include "ROOT/TThreadedObject.hxx"
 
 #include "TDataFrame.hpp"
 
@@ -51,9 +52,8 @@ int tdf001_introduction() {
    // We read the tree from the file and create a TDataFrame, a class that 
    // allows us to interact with the data contained in the tree.
    TFile f(fileName);
-   TTree* t;
-   f.GetObject(treeName,t);
-   TDataFrame d(*t);
+   TTreeReader r(treeName, &f);
+   TDataFrame d(r);
 
    // ## Operations on the dataframe 
    // We now review some "actions" which can be performed on the data frame
@@ -98,10 +98,20 @@ int tdf001_introduction() {
 
    std::cout << "\nh filled with " << h.GetEntries() << " entries" << std::endl;
 
+   // ### parallel `foreach`
+   // Same as before, but the histogram is filled by four threads in parallel
+   ROOT::EnableImplicitMT(4);
+   ROOT::TThreadedObject<TH1F> tth("h", "h", 12, -1, 11);
+   d.filter([](int b2) { return b2 % 2 == 0; }, {"b2"})
+    .foreach([&tth](double b1) { tth->Fill(b1); }, {"b1"});
+   tth.Merge();
+
+   std::cout << "\ntth filled with " << tth->GetEntries() << " entries" << std::endl;
+
    // It is also possible to select the branches which will be used by default
    // upfront. In this case there is no need to specify the name of the input
    // branch of cutb1 (the first cut).
-   TDataFrame d2(*t, {"b1"});
+   TDataFrame d2(r, {"b1"});
    auto entries_bis = d2.filter(cutb1).filter(cutb1b2, {"b2", "b1"}).collect_entries();
    std::cout << "\ndefault branches: "
              << (entries == entries_bis ? "ok" : "ko")
