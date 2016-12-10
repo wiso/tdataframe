@@ -4,11 +4,9 @@
 #include "ROOT/TThreadedObject.hxx"
 #include "TH1F.h"
 
-void fill_tree(TTree& t);
-
 int main() {
    TFile file("mytree.root");
-   TTreeReader r("t", &file);
+   TTreeReader r("mytree", &file);
    TDataFrame d(r);
    // define filters
    auto cutb1 = [](double b1) { return b1 < 5.; };
