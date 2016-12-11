@@ -6,8 +6,7 @@
 
 int main() {
    TFile file("mytree.root");
-   TTreeReader r("mytree", &file);
-   TDataFrame d(r);
+   TDataFrame d("mytree", &file);
    // define filters
    auto cutb1 = [](double b1) { return b1 < 5.; };
    auto cutb1b2 = [](int b2, double b1) { return b2 % 2 && b1 < 4.; };
@@ -50,7 +49,7 @@ int main() {
    std::cout << "\nth_h filled with " << th_h->GetEntries() << " entries" << std::endl;
 
    // use default branches
-   TDataFrame d2(r, {"b1"});
+   TDataFrame d2("mytree", &file, {"b1"});
    auto entries_bis = d2.filter(cutb1).filter(cutb1b2, {"b2", "b1"}).collect_entries();
    std::cout << "\ndefault branches: "
              << (entries == entries_bis ? "ok" : "ko")

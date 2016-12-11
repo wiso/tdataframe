@@ -5,6 +5,7 @@
 #include <string> // std::to_string
 #include <type_traits> //std::is_same
 #include <memory> //std::make_shared
+#include <stdexcept> //std::runtime_error
 #include "metautils.hpp" // f_traits, seq
 #include "TDataFrameTypes.hpp" //BranchList
 #include "TTreeReader.h"
@@ -45,5 +46,8 @@ bool check_filter(Filter f, const BranchList& bl, const BranchList& def_bl) {
 
    return use_def_bl;
 }
+
+
+bool check_reader(const TTreeReader& r);
 
 #endif // HELPERS

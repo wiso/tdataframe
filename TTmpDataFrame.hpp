@@ -20,8 +20,9 @@ class TTmpDataFrame {
    using filter_ind = typename gens<std::tuple_size<filter_types>::value>::type;
 
    public:
-   TTmpDataFrame(TTreeReader& _t, const BranchList& _bl, Filter _f, PrevData& _pd)
-      : t(_t), bl(_bl), f(_f), pd(_pd), def_bl(_pd.def_bl) {}
+   TTmpDataFrame(const BranchList& _bl, Filter _f, PrevData& _pd)
+      : bl(_bl), f(_f), pd(_pd), def_bl(_pd.def_bl), dir(_pd.dir),
+        tree_name(_pd.tree_name) {}
 
    template<typename NewFilter>
    auto filter(NewFilter f, const BranchList& bl = {})
@@ -47,20 +48,21 @@ class TTmpDataFrame {
    bool apply_filters(std::tuple<types...>, seq<S...>);
 
    template<typename F, int... S, typename... types>
-   void loop_and_apply(TTreeReader& my_t, F f, const BranchList& branches,
+   void loop_and_apply(TTreeReader& r, F f, const BranchList& branches,
                        std::tuple<types...> types_tuple, seq<S...> intseq);
 
    template<typename F, int... S, typename... types>
    void foreach_helper(const BranchList& branches, F f,
                        std::tuple<types...> types_tuple, seq<S...> intseq);
 
-   void build_filter_tvb(TTreeReader& my_t);
+   void build_filter_tvb(TTreeReader& r);
 
-   TTreeReader& t;
    const BranchList& bl;
    Filter f;
    PrevData pd;
    const BranchList& def_bl;
+   TDirectory* dir;
+   const std::string& tree_name;
    TVBVec filter_tvb;
 };
 
@@ -73,7 +75,7 @@ auto TTmpDataFrame<Filter,PrevData>::filter(NewFilter f, const BranchList& bl)
    bool use_def_bl = check_filter(f, bl, def_bl);
    const BranchList& actual_bl = use_def_bl ? def_bl : bl;
    // Create a TTmpDataFrame that contains *this (and the new filter)
-   return TTmpDataFrame<NewFilter, decltype(*this)>(t, actual_bl, f, *this);
+   return TTmpDataFrame<NewFilter, decltype(*this)>(actual_bl, f, *this);
 }
 
 
@@ -81,9 +83,29 @@ template<typename Filter, typename PrevData>
 template<typename F>
 void TTmpDataFrame<Filter,PrevData>::foreach(const BranchList& branches, F f)
 {
-   using f_arg_types = typename f_traits<F>::arg_types_tuple;
-   using f_arg_indexes = typename gens<std::tuple_size<f_arg_types>::value>::type;
-   foreach_helper(branches, f, f_arg_types(), f_arg_indexes());
+   using arg_t_tuple = typename f_traits<F>::arg_types_tuple;
+   using arg_indexes = typename gens<std::tuple_size<arg_t_tuple>::value>::type;
+   #ifdef R__USE_IMT
+      if(ROOT::IsImplicitMTEnabled()) {
+         auto file_name = dir->GetName();
+         ROOT::TTreeProcessor tp(file_name, tree_name);
+         tp.Process(
+            [&f, &branches, this] (TTreeReader& my_r) {
+               this->loop_and_apply(my_r, f, branches, arg_t_tuple(), arg_indexes());
+            }
+         );
+      } else {
+         TTreeReader r(tree_name.c_str(), dir);
+         if(!check_reader(r))
+            return;
+         loop_and_apply(r, f, branches, f_arg_types(), f_arg_indexes());
+      }
+   #else
+      TTreeReader r(tree_name.c_str(), dir);
+      if(!check_reader(r))
+         return;
+      loop_and_apply(r, f, branches, arg_t_tuple(), arg_indexes());
+   #endif
 }
 
 
@@ -91,10 +113,14 @@ template<typename Filter, typename PrevData>
 std::list<unsigned> TTmpDataFrame<Filter,PrevData>::collect_entries()
 {
    std::list<unsigned> l;
-   build_filter_tvb(t);
-   while(t.Next())
-      if(apply_filters())
-         l.push_back(t.GetCurrentEntry());
+   TTreeReader r(tree_name.c_str(), dir);
+   if(check_reader(r)) {
+      build_filter_tvb(r);
+      while(r.Next())
+         if(apply_filters())
+            l.push_back(r.GetCurrentEntry());
+   }
+
    return l;
 }
 
@@ -102,12 +128,15 @@ template<typename Filter, typename PrevData>
 template<typename T>
 std::list<T> TTmpDataFrame<Filter,PrevData>::get(std::string branch)
 {
+   TTreeReader r(tree_name.c_str(), dir);
    std::list<T> res;
-   build_filter_tvb(t);
-   TTreeReaderValue<T> v(t, branch.c_str());
-   while(t.Next())
-      if(apply_filters())
-         res.push_back(*v);
+   if(check_reader(r)) {
+      build_filter_tvb(r);
+      TTreeReaderValue<T> v(r, branch.c_str());
+      while(r.Next())
+         if(apply_filters())
+            res.push_back(*v);
+   }
 
    return res;
 }
@@ -119,11 +148,14 @@ TH1F TTmpDataFrame<Filter,PrevData>::fillhist(std::string branch, unsigned nbins
 {
    // histogram with automatic binning
    TH1F h(("h_" + branch + suffix).c_str(), branch.c_str(), nbins, 0., 0.);
-   build_filter_tvb(t);
-   TTreeReaderValue<T> v(t, branch.c_str());
-   while(t.Next())
-      if(apply_filters())
-         h.Fill(*v);
+   TTreeReader r(tree_name.c_str(), dir);
+   if(check_reader(r)) {
+      build_filter_tvb(r);
+      TTreeReaderValue<T> v(r, branch.c_str());
+      while(r.Next())
+         if(apply_filters())
+            h.Fill(*v);
+   }
 
    return h;
 }
@@ -149,12 +181,12 @@ bool TTmpDataFrame<Filter,PrevData>::apply_filters(std::tuple<types...>, seq<S..
 template<typename Filter, typename PrevData>
 template<typename F, int... S, typename... types>
 void TTmpDataFrame<Filter,PrevData>::loop_and_apply(
-   TTreeReader& my_t, F f, const BranchList& branches,
+   TTreeReader& r, F f, const BranchList& branches,
    std::tuple<types...> types_tuple, seq<S...> intseq)
 {
-   auto f_tvb = build_tvb(my_t, branches, types_tuple, intseq);
-   build_filter_tvb(my_t);
-   while(my_t.Next()) {
+   auto f_tvb = build_tvb(r, branches, types_tuple, intseq);
+   build_filter_tvb(r);
+   while(r.Next()) {
       if(apply_filters())
          f(*(std::static_pointer_cast<TTreeReaderValue<types>>(f_tvb[S]))->Get()...);
    }
@@ -162,35 +194,9 @@ void TTmpDataFrame<Filter,PrevData>::loop_and_apply(
 
 
 template<typename Filter, typename PrevData>
-template<typename F, int... S, typename... types>
-void TTmpDataFrame<Filter,PrevData>::foreach_helper(
-   const BranchList& branches, F f, std::tuple<types...> types_tuple, seq<S...> intseq)
-{
-   #ifdef R__USE_IMT
-      if(ROOT::IsImplicitMTEnabled()) {
-         auto tree = t.GetTree();
-         auto tree_name = tree->GetName();
-         auto file = tree->GetCurrentFile();
-         auto file_name = file->GetName();
-         ROOT::TTreeProcessor tp(file_name, tree_name);
-         tp.Process(
-            [&f, &branches, &types_tuple, &intseq, this] (TTreeReader& my_t) {
-               this->loop_and_apply(my_t, f, branches, types_tuple, intseq);
-            }
-         );
-      } else {
-         loop_and_apply(t, f, branches, types_tuple, intseq);
-      }
-   #else
-      loop_and_apply(t, f, branches, types_tuple, intseq);
-   #endif
-}
-
-
-template<typename Filter, typename PrevData>
-void TTmpDataFrame<Filter,PrevData>::build_filter_tvb(TTreeReader& my_t) {
-   filter_tvb = build_tvb(my_t, bl, filter_types(), filter_ind());
-   pd.build_filter_tvb(my_t);
+void TTmpDataFrame<Filter,PrevData>::build_filter_tvb(TTreeReader& r) {
+   filter_tvb = build_tvb(r, bl, filter_types(), filter_ind());
+   pd.build_filter_tvb(r);
    return;
 }
 
